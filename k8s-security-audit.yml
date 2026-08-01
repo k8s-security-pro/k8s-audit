@@ -1,0 +1,29 @@
+# Example: run k8s-audit against a cluster in CI and fail the build on a
+# FAIL-severity finding (privileged container, unprotected namespace, ...).
+#
+# This assumes your runner already has a kubeconfig for the target cluster
+# (e.g. via aws eks update-kubeconfig / gcloud container clusters get-credentials
+# / azure aks get-credentials in a prior step, or a KUBECONFIG secret).
+name: Kubernetes security audit
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 6 * * 1"   # every Monday 06:00 UTC
+  # pull_request: {}      # or gate PRs that touch your manifests
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      # - name: Configure kubeconfig
+      #   run: echo "${{ secrets.KUBECONFIG }}" > "$HOME/.kube/config"
+
+      - name: Run k8s-audit
+        run: |
+          curl -sSL https://raw.githubusercontent.com/k8s-security-pro/k8s-audit/main/k8s-audit.sh -o k8s-audit.sh
+          chmod +x k8s-audit.sh
+          ./k8s-audit.sh
