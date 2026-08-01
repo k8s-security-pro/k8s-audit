@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="486" viewBox="0 0 760 486" font-family="ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace" font-size="13">
+  <defs>
+    <style>
+      .fg   { fill: #c9d1d9; }
+      .dim  { fill: #8b949e; }
+      .grn  { fill: #3fb950; }
+      .amb  { fill: #d29922; }
+      .red  { fill: #f85149; }
+      .head { fill: #58a6ff; }
+      .link { fill: #58a6ff; }
+    </style>
+  </defs>
+
+  <!-- window -->
+  <rect x="1" y="1" width="758" height="484" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+  <!-- title bar -->
+  <rect x="1.5" y="1.5" width="757" height="34" rx="10" fill="#161b22"/>
+  <rect x="1.5" y="24" width="757" height="12" fill="#161b22"/>
+  <circle cx="24" cy="18" r="6" fill="#f85149"/>
+  <circle cx="44" cy="18" r="6" fill="#d29922"/>
+  <circle cx="64" cy="18" r="6" fill="#3fb950"/>
+  <text x="380" y="22" text-anchor="middle" class="dim" font-size="12">k8s-audit</text>
+
+  <!-- body -->
+  <g xml:space="preserve">
+    <text y="66"><tspan x="24" class="grn">$</tspan><tspan class="fg"> ./k8s-audit.sh</tspan></text>
+
+    <text x="24" y="104" class="fg">  k8s-audit · prod-eu-1</text>
+    <text x="24" y="123" class="dim">  high-signal checks mapped to the k8s-security.pro 50-point checklist</text>
+
+    <text x="24" y="158" class="dim">  ── Pod Security</text>
+    <text y="179"><tspan x="53" class="red">✗</tspan><tspan x="72" class="fg">#2  Privileged containers</tspan><tspan x="380" class="dim">2 workloads: payments/worker-0, …</tspan></text>
+    <text y="200"><tspan x="53" class="red">✗</tspan><tspan x="72" class="fg">#7b Dangerous capabilities added</tspan><tspan x="380" class="dim">1 workload: ingress/nginx (NET_ADMIN)</tspan></text>
+    <text y="221"><tspan x="51" class="amb">![</tspan><tspan x="72" class="fg">#6  SA token auto-mounted</tspan><tspan x="380" class="dim">31 workloads</tspan></text>
+    <text y="242"><tspan x="51" class="amb">![</tspan><tspan x="72" class="fg">#9  hostPath volumes mounted</tspan><tspan x="380" class="dim">4 workloads</tspan></text>
+
+    <text x="24" y="277" class="dim">  ── Network</text>
+    <text y="298"><tspan x="53" class="red">✗</tspan><tspan x="72" class="fg">#8  Namespaces without a NetworkPolicy</tspan><tspan x="380" class="dim">no default-deny in: payments staging</tspan></text>
+
+    <text x="24" y="333" class="dim">  ── RBAC</text>
+    <text y="354"><tspan x="51" class="amb">![</tspan><tspan x="72" class="fg">#16 Roles granting * verbs on * res.</tspan><tspan x="380" class="dim">2 roles: debug-admin, ci-deployer</tspan></text>
+    <text y="375"><tspan x="51" class="amb">![</tspan><tspan x="72" class="fg">#14 cluster-admin bindings</tspan><tspan x="380" class="dim">3 bindings — review each</tspan></text>
+
+    <text y="416"><tspan x="24" class="fg">  </tspan><tspan class="grn">11 pass</tspan><tspan class="dim">   </tspan><tspan class="amb">6 warn</tspan><tspan class="dim">   </tspan><tspan class="red">3 fail</tspan></text>
+    <text y="452"><tspan x="24" class="dim">  → </tspan><tspan class="link">https://k8s-security.pro</tspan></text>
+  </g>
+</svg>

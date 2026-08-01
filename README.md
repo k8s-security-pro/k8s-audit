@@ -9,30 +9,14 @@ missing resource limits, and more.
 
 It's read-only, sends nothing anywhere, and needs no install beyond a shell.
 
-```
-$ ./k8s-audit.sh
-
-  k8s-audit · prod-eu-1
-  high-signal checks mapped to the k8s-security.pro 50-point checklist
-
-  ── Pod Security
-     ✗ #2 Privileged containers                    2 workload(s): payments/worker-0, ...
-     ✓ #3 allowPrivilegeEscalation not disabled     no matching workloads
-     ![ #6 SA token auto-mounted                    31 workload(s): ...
-  ── Network
-     ✗ #8 Namespaces without a NetworkPolicy        no default-deny in: payments staging
-  ── RBAC
-     ![ #14 cluster-admin bindings                  3 bindings grant cluster-admin — review each
-
-  9 pass   4 warn   2 fail
-```
+![k8s-audit sample output — a colored terminal report grouped by security domain](demo.svg)
 
 ## Why this exists
 
 Everything in Kubernetes security is technically "free" — CIS Benchmark, kube-bench,
 Kubescape, Trivy. But those tools flag *hundreds* of items and leave you to figure out
 which ones matter and how to fix them. `k8s-audit` is the opinionated 30-second first
-pass: the dozen checks that catch the most common real-world exposures, each mapped to
+pass: ~16 checks that catch the most common real-world exposures, each mapped to
 a specific item in the [k8s-security.pro 50-point checklist](https://k8s-security.pro).
 
 It's built and maintained by the team behind **[k8s-security.pro](https://k8s-security.pro)** —
@@ -75,18 +59,23 @@ a privileged container or an unprotected namespace (full example in
     ./k8s-audit.sh
 ```
 
-## What it checks (12 of 50)
+## What it checks (16 of 50)
 
 | # | Domain | Check |
 |---|--------|-------|
 | 2 | Pod Security | Privileged containers |
 | 3 | Pod Security | `allowPrivilegeEscalation` not disabled |
 | 4 | Pod Security | Running as root (`runAsNonRoot` unset) |
+| 4b | Pod Security | `readOnlyRootFilesystem` not set |
 | 5 | Pod Security | `hostNetwork` / `hostPID` / `hostIPC` |
 | 6 | Pod Security | ServiceAccount token auto-mounted |
 | 7 | Pod Security | Capabilities not dropped (`ALL`) |
+| 7b | Pod Security | Dangerous capabilities added (`SYS_ADMIN`, `NET_ADMIN`, …) |
+| 9 | Pod Security | `hostPath` volumes mounted |
 | 8 | Network | Namespaces without a NetworkPolicy (no default-deny) |
 | 14 | RBAC | `cluster-admin` bindings |
+| 15 | RBAC | Workloads using the `default` ServiceAccount |
+| 16 | RBAC | Roles granting `*` verbs on `*` resources |
 | 20 | Cluster Hardening | Workloads in the `default` namespace |
 | 22 | Cluster Hardening | Containers without resource limits |
 | 28 | Supply Chain | Images using `:latest` or untagged |
@@ -104,7 +93,10 @@ a privileged container or an unprotected namespace (full example in
 ## Contributing
 
 Issues and PRs welcome — especially new high-signal checks (keep them `kubectl`+`jq`
-only, read-only, and mapped to a checklist domain).
+only, read-only, and mapped to a checklist domain). New to the project? Look for the
+[`good first issue`](https://github.com/k8s-security-pro/k8s-audit/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+label — each one is a small, self-contained check with the jq filter sketched out for you.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how a check is structured.
 
 ## License
 

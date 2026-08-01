@@ -65,6 +65,14 @@ check_pods WARN "Pod Security" "#6 SA token auto-mounted" \
   '(.spec.automountServiceAccountToken // true) == true'
 check_pods WARN "Pod Security" "#7 Capabilities not dropped (ALL)" \
   '.spec.containers[]? | ((.securityContext.capabilities.drop // []) | index("ALL")) == null'
+check_pods FAIL "Pod Security" "#7b Dangerous capabilities added" \
+  'any(.spec.containers[]?; (.securityContext.capabilities.add // []) | any(. == "SYS_ADMIN" or . == "NET_ADMIN" or . == "NET_RAW" or . == "SYS_PTRACE" or . == "SYS_MODULE" or . == "ALL"))'
+check_pods WARN "Pod Security" "#4b readOnlyRootFilesystem not set" \
+  'any(.spec.containers[]?; (.securityContext.readOnlyRootFilesystem // false) != true)'
+check_pods WARN "Pod Security" "#9 hostPath volumes mounted" \
+  'any(.spec.volumes[]?; .hostPath != null)'
+check_pods WARN "RBAC" "#15 Workloads using the default ServiceAccount" \
+  '((.spec.serviceAccountName // "default") == "default") and ((.metadata.namespace // "") | startswith("kube-") | not)'
 
 # ── Supply Chain (domain V) ───────────────────────────────────────────────────
 check_pods WARN "Supply Chain" "#28 Images using :latest or untagged" \
@@ -94,6 +102,16 @@ ADMIN_BINDINGS="$(kubectl get clusterrolebindings -o json 2>/dev/null \
   | jq -r '[.items[] | select(.roleRef.name=="cluster-admin") | .metadata.name] | length' 2>/dev/null || echo 0)"
 if [[ "$ADMIN_BINDINGS" -le 1 ]]; then record PASS "RBAC" "#14 cluster-admin bindings" "$ADMIN_BINDINGS binding(s)"
 else record WARN "RBAC" "#14 cluster-admin bindings" "$ADMIN_BINDINGS bindings grant cluster-admin — review each"; fi
+
+# ── RBAC (domain III): roles granting verbs=* on resources=* ─────────────────
+WILDCARD_COUNT="$(kubectl get clusterroles,roles --all-namespaces -o json 2>/dev/null \
+  | jq -r '[.items[] | select((.metadata.name // "" | startswith("system:")) | not) | select(any(.rules[]?; ((.verbs // []) | index("*")) and ((.resources // []) | index("*"))))] | length' 2>/dev/null || echo 0)"
+if [[ "${WILDCARD_COUNT:-0}" -eq 0 ]]; then record PASS "RBAC" "#16 Roles granting * verbs on * resources" "none (excluding built-in system: roles)"
+else
+  WNAMES="$(kubectl get clusterroles,roles --all-namespaces -o json 2>/dev/null \
+    | jq -r '[.items[] | select((.metadata.name // "" | startswith("system:")) | not) | select(any(.rules[]?; ((.verbs // []) | index("*")) and ((.resources // []) | index("*")))) | .metadata.name] | .[0:8] | join(", ")' 2>/dev/null)"
+  record WARN "RBAC" "#16 Roles granting * verbs on * resources" "$WILDCARD_COUNT role(s): $WNAMES"
+fi
 
 # ── Output ───────────────────────────────────────────────────────────────────
 if $JSON; then
@@ -128,7 +146,7 @@ done
 echo
 echo "  ${c_grn}${PASS} pass${c_rst}   ${c_yel}${WARN} warn${c_rst}   ${c_red}${FAIL} fail${c_rst}"
 echo
-echo "  ${c_dim}This covers ~12 of 50 checks. For the full 50-point audit, remediation${c_rst}"
+echo "  ${c_dim}This covers ~16 of 50 checks. For the full 50-point audit, remediation${c_rst}"
 echo "  ${c_dim}YAML, Helm charts, Kustomize overlays and CIS/SOC2 mappings:${c_rst}"
 echo "  → https://k8s-security.pro"
 echo
