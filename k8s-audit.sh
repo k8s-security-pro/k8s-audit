@@ -9,7 +9,11 @@
 #
 # Nothing is sent anywhere. Read-only: it never mutates your cluster.
 #
-#   Usage:  ./k8s-audit.sh [-n NAMESPACE] [--json]
+#   Usage:  ./k8s-audit.sh [-n NAMESPACE] [--json] [--html [FILE]]
+#
+#   --html [FILE]  also write a single-file HTML report you can share
+#                  (default: k8s-audit-report.html). Safe to attach to a
+#                  PR, Slack thread or audit evidence folder.
 #
 # Full 50-point checklist, remediation YAML, Helm & Kustomize:
 #   https://k8s-security.pro
@@ -19,6 +23,7 @@ set -euo pipefail
 
 NS_FILTER=""          # empty = all namespaces
 JSON=false
+HTML_OUT=""           # empty = no HTML report
 PASS=0; WARN=0; FAIL=0
 declare -a FINDINGS    # "SEVERITY|DOMAIN|CHECK|DETAIL"
 
@@ -26,6 +31,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--namespace) NS_FILTER="$2"; shift 2 ;;
     --json) JSON=true; shift ;;
+    --html)
+      if [[ $# -gt 1 && "$2" != -* ]]; then HTML_OUT="$2"; shift 2
+      else HTML_OUT="k8s-audit-report.html"; shift; fi ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -39,7 +47,8 @@ if [[ -n "$NS_FILTER" ]]; then NS_ARGS=(-n "$NS_FILTER"); else NS_ARGS=(--all-na
 # pull all pods once
 PODS_JSON="$(kubectl get pods "${NS_ARGS[@]}" -o json 2>/dev/null || echo '{"items":[]}')"
 
-record() { FINDINGS+=("$1|$2|$3|$4"); case "$1" in PASS) ((PASS++));; WARN) ((WARN++));; FAIL) ((FAIL++));; esac; }
+# note: `((X++))` returns exit 1 when X is 0, which aborts under `set -e`; use assignment form
+record() { FINDINGS+=("$1|$2|$3|$4"); case "$1" in PASS) PASS=$((PASS+1));; WARN) WARN=$((WARN+1));; FAIL) FAIL=$((FAIL+1));; esac; }
 
 # helper: count pods matching a jq filter over .items[]
 count_pods() { echo "$PODS_JSON" | jq "[.items[] | select($1)] | length"; }
@@ -71,9 +80,6 @@ check_pods WARN "Pod Security" "#4b readOnlyRootFilesystem not set" \
   'any(.spec.containers[]?; (.securityContext.readOnlyRootFilesystem // false) != true)'
 check_pods WARN "Pod Security" "#9 hostPath volumes mounted" \
   'any(.spec.volumes[]?; .hostPath != null)'
-check_pods WARN "RBAC" "#15 Workloads using the default ServiceAccount" \
-  '((.spec.serviceAccountName // "default") == "default") and ((.metadata.namespace // "") | startswith("kube-") | not)'
-
 # ── Supply Chain (domain V) ───────────────────────────────────────────────────
 check_pods WARN "Supply Chain" "#28 Images using :latest or untagged" \
   '.spec.containers[]?.image | (test(":latest$")) or (test(":") | not)'
@@ -111,6 +117,64 @@ else
   WNAMES="$(kubectl get clusterroles,roles --all-namespaces -o json 2>/dev/null \
     | jq -r '[.items[] | select((.metadata.name // "" | startswith("system:")) | not) | select(any(.rules[]?; ((.verbs // []) | index("*")) and ((.resources // []) | index("*")))) | .metadata.name] | .[0:8] | join(", ")' 2>/dev/null)"
   record WARN "RBAC" "#16 Roles granting * verbs on * resources" "$WILDCARD_COUNT role(s): $WNAMES"
+fi
+check_pods WARN "RBAC" "#15 Workloads using the default ServiceAccount" \
+  '((.spec.serviceAccountName // "default") == "default") and ((.metadata.namespace // "") | startswith("kube-") | not)'
+
+# ── HTML report (optional, single self-contained file) ───────────────────────
+html_esc() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
+
+write_html() {
+  local out="$1"
+  local ctx; ctx="$(kubectl config current-context 2>/dev/null || echo cluster)"
+  local when; when="$(date -u +'%Y-%m-%d %H:%M UTC')"
+  local total=$((PASS + WARN + FAIL))
+  local scope="all namespaces"; [[ -n "$NS_FILTER" ]] && scope="namespace $NS_FILTER"
+  {
+    cat <<EOF
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>k8s-audit report · $(printf '%s' "$ctx" | html_esc)</title>
+<style>
+:root{color-scheme:dark}body{margin:0;background:#0d1117;color:#e6edf3;font:15px/1.5 -apple-system,"Segoe UI",Inter,Helvetica,Arial,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:40px 24px}h1{font-size:26px;margin:0 0 4px}.meta{color:#8b949e;font-size:14px;margin-bottom:24px}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:28px}.tile{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px 18px}
+.tile b{display:block;font-size:30px;line-height:1}.tile span{color:#8b949e;font-size:13px;text-transform:uppercase;letter-spacing:.06em}
+.pass b{color:#3fb950}.warn b{color:#d29922}.fail b{color:#f85149}
+h2{font-size:15px;color:#8b949e;text-transform:uppercase;letter-spacing:.06em;margin:26px 0 8px}
+table{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:10px;overflow:hidden}
+td{padding:10px 14px;border-top:1px solid #21262d;vertical-align:top}tr:first-child td{border-top:0}
+.sev{display:inline-block;min-width:44px;text-align:center;font-size:12px;font-weight:700;border-radius:6px;padding:2px 6px}
+.sev.PASS{background:#23863620;color:#3fb950}.sev.WARN{background:#9e6a0320;color:#d29922}.sev.FAIL{background:#da363320;color:#f85149}
+.chk{font-weight:600;white-space:nowrap}.det{color:#8b949e;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;word-break:break-word}
+.foot{margin-top:32px;color:#8b949e;font-size:13px;border-top:1px solid #30363d;padding-top:16px}.foot a{color:#58a6ff;text-decoration:none}
+@media print{body{background:#fff;color:#111}.tile,table{background:#fff;border-color:#ccc}.det,.meta,.foot,h2{color:#555}}
+</style></head><body><div class="wrap">
+<h1>k8s-audit report</h1>
+<div class="meta">Context <b>$(printf '%s' "$ctx" | html_esc)</b> · $(printf '%s' "$scope" | html_esc) · $when · $total checks (read-only)</div>
+<div class="tiles"><div class="tile pass"><b>$PASS</b><span>pass</span></div><div class="tile warn"><b>$WARN</b><span>warn</span></div><div class="tile fail"><b>$FAIL</b><span>fail</span></div></div>
+EOF
+    local last_dom="" f sev dom name detail
+    for f in "${FINDINGS[@]}"; do
+      IFS='|' read -r sev dom name detail <<<"$f"
+      if [[ "$dom" != "$last_dom" ]]; then
+        [[ -n "$last_dom" ]] && echo "</table>"
+        echo "<h2>$(printf '%s' "$dom" | html_esc)</h2><table>"
+        last_dom="$dom"
+      fi
+      printf '<tr><td><span class="sev %s">%s</span></td><td class="chk">%s</td><td class="det">%s</td></tr>\n' \
+        "$sev" "$sev" "$(printf '%s' "$name" | html_esc)" "$(printf '%s' "$detail" | html_esc)"
+    done
+    [[ -n "$last_dom" ]] && echo "</table>"
+    cat <<'EOF'
+<div class="foot">Generated by <a href="https://github.com/k8s-security-pro/k8s-audit">k8s-audit</a>, an open-source read-only first pass. Check numbers map to the <a href="https://k8s-security.pro">k8s-security.pro 50-point checklist</a>. For full CIS coverage run kube-bench or Kubescape.</div>
+</div></body></html>
+EOF
+  } > "$out"
+}
+
+if [[ -n "$HTML_OUT" ]]; then
+  write_html "$HTML_OUT"
+  $JSON || echo "  HTML report written to $HTML_OUT" >&2
 fi
 
 # ── Output ───────────────────────────────────────────────────────────────────

@@ -41,9 +41,18 @@ Requirements: `kubectl` (pointed at your cluster) and `jq`.
 ./k8s-audit.sh                 # audit all namespaces
 ./k8s-audit.sh -n payments     # a single namespace
 ./k8s-audit.sh --json          # machine-readable output (for CI / dashboards)
+./k8s-audit.sh --html          # also write k8s-audit-report.html (shareable, single file)
+./k8s-audit.sh --html audit-2026-09.html   # pick the file name
 ```
 
 Exit code is non-zero if any **FAIL**-severity check trips — so you can gate CI on it.
+
+### Shareable HTML report
+
+`--html` writes a self-contained dark-theme report (no external assets, prints cleanly)
+with the pass/warn/fail summary and every finding grouped by domain. Attach it to a PR,
+drop it in a Slack thread, or keep it in your audit evidence folder. It works together
+with `--json`, so one run can feed both a dashboard and a human.
 
 ## Use it in CI
 
