@@ -89,6 +89,17 @@ a privileged container or an unprotected namespace (full example in
 | 22 | Cluster Hardening | Containers without resource limits |
 | 28 | Supply Chain | Images using `:latest` or untagged |
 
+## Use it with Claude
+
+The [k8s-security-audit skill](https://github.com/k8s-security-pro/k8s-audit-skill)
+runs this script plus extra RBAC, secrets and exposure checks from Claude Code,
+then writes a prioritized fix plan with YAML, mapped to CIS, SOC 2 and ISO 27001:
+
+```
+/plugin marketplace add k8s-security-pro/k8s-audit-skill
+/plugin install k8s-security-audit@k8s-security-pro
+```
+
 ## Going deeper
 
 `k8s-audit` deliberately stops at the high-signal dozen. For the complete picture:

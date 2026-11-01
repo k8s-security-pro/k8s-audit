@@ -58,7 +58,10 @@ check_pods() { # severity domain "#N check" jq_filter
   local sev="$1" dom="$2" name="$3" filt="$4"
   local c; c="$(count_pods "$filt")"
   if [[ "$c" == "0" ]]; then record PASS "$dom" "$name" "no matching workloads"
-  else record "$sev" "$dom" "$name" "$c workload(s): $(list_pods "$filt" | paste -sd, -)"; fi
+  else
+    local more=""; [[ "$c" -gt 8 ]] && more=", +$((c-8)) more"
+    record "$sev" "$dom" "$name" "$c workload(s): $(list_pods "$filt" | paste -sd, -)$more"
+  fi
 }
 
 # ── Pod Security (checklist domain I) ─────────────────────────────────────────
@@ -99,9 +102,9 @@ while read -r ns; do
   [[ -z "$ns" || "$ns" =~ ^(kube-system|kube-public|kube-node-lease)$ ]] && continue
   local_np="$(kubectl get netpol -n "$ns" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
   [[ "$local_np" == "0" ]] && NP_MISSING+="$ns "
-done < <(kubectl get ns -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n')
+done < <(kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
 if [[ -z "$NP_MISSING" ]]; then record PASS "Network" "#8 Namespaces without a NetworkPolicy" "all namespaces have at least one"
-else record FAIL "Network" "#8 Namespaces without a NetworkPolicy" "no default-deny in: ${NP_MISSING% }"; fi
+else record FAIL "Network" "#8 Namespaces without a NetworkPolicy" "no NetworkPolicy in: ${NP_MISSING% }"; fi
 
 # ── RBAC (domain III): cluster-admin bindings ────────────────────────────────
 ADMIN_BINDINGS="$(kubectl get clusterrolebindings -o json 2>/dev/null \
