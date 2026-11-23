@@ -68,17 +68,17 @@ check_pods() { # severity domain "#N check" jq_filter
 check_pods FAIL "Pod Security" "#2 Privileged containers" \
   '.spec.containers[]?.securityContext?.privileged == true'
 check_pods FAIL "Pod Security" "#3 allowPrivilegeEscalation not disabled" \
-  '(.spec.containers[]? | (.securityContext.allowPrivilegeEscalation // true)) == true'
+  'any(.spec.containers[]?; .securityContext.allowPrivilegeEscalation != false)'
 check_pods WARN "Pod Security" "#4 Running as root (runAsNonRoot unset)" \
   '((.spec.securityContext.runAsNonRoot // false) == false) and (all(.spec.containers[]?; (.securityContext.runAsNonRoot // false) == false))'
 check_pods FAIL "Pod Security" "#5 hostNetwork / hostPID / hostIPC" \
   '(.spec.hostNetwork == true) or (.spec.hostPID == true) or (.spec.hostIPC == true)'
 check_pods WARN "Pod Security" "#6 SA token auto-mounted" \
-  '(.spec.automountServiceAccountToken // true) == true'
+  'any(.spec.volumes[]?; any(.projected.sources[]?; .serviceAccountToken != null))'
 check_pods WARN "Pod Security" "#7 Capabilities not dropped (ALL)" \
-  '.spec.containers[]? | ((.securityContext.capabilities.drop // []) | index("ALL")) == null'
+  'any(.spec.containers[]?; (.securityContext.capabilities.drop // []) | map(ascii_upcase) | index("ALL") | not)'
 check_pods FAIL "Pod Security" "#7b Dangerous capabilities added" \
-  'any(.spec.containers[]?; (.securityContext.capabilities.add // []) | any(. == "SYS_ADMIN" or . == "NET_ADMIN" or . == "NET_RAW" or . == "SYS_PTRACE" or . == "SYS_MODULE" or . == "ALL"))'
+  'any(.spec.containers[]?; (.securityContext.capabilities.add // []) | map(ascii_upcase | ltrimstr("CAP_")) | any(. == "SYS_ADMIN" or . == "NET_ADMIN" or . == "NET_RAW" or . == "SYS_PTRACE" or . == "SYS_MODULE" or . == "ALL"))'
 check_pods WARN "Pod Security" "#4b readOnlyRootFilesystem not set" \
   'any(.spec.containers[]?; (.securityContext.readOnlyRootFilesystem // false) != true)'
 check_pods WARN "Pod Security" "#9 hostPath volumes mounted" \
