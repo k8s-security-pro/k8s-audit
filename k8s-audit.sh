@@ -44,17 +44,31 @@ command -v jq >/dev/null || { echo "jq not found (brew install jq)" >&2; exit 1;
 
 if [[ -n "$NS_FILTER" ]]; then NS_ARGS=(-n "$NS_FILTER"); else NS_ARGS=(--all-namespaces); fi
 
-# pull all pods once
-PODS_JSON="$(kubectl get pods "${NS_ARGS[@]}" -o json 2>/dev/null || echo '{"items":[]}')"
+# kubectl errors go to a temp file so a failed read can be reported, never
+# silently treated as "nothing found"
+ERR_FILE="$(mktemp)"; trap 'rm -f "$ERR_FILE"' EXIT
+kread() { kubectl "$@" 2>"$ERR_FILE"; }
+kerr()  { head -n 1 "$ERR_FILE" | cut -c1-200; }
+
+# pull all pods once; without them there is no report
+if ! PODS_JSON="$(kread get pods "${NS_ARGS[@]}" -o json)"; then
+  cat "$ERR_FILE" >&2
+  echo "k8s-audit: could not list pods in ${NS_FILTER:-all namespaces} (context: $(kubectl config current-context 2>/dev/null || echo none))." >&2
+  echo "k8s-audit: check the kubeconfig and that this identity can list pods. No report was produced." >&2
+  exit 3
+fi
 
 # note: `((X++))` returns exit 1 when X is 0, which aborts under `set -e`; use assignment form
 record() { FINDINGS+=("$1|$2|$3|$4"); case "$1" in PASS) PASS=$((PASS+1));; WARN) WARN=$((WARN+1));; FAIL) FAIL=$((FAIL+1));; esac; }
+# a read that failed (no permission, API error) is a WARN, never a PASS
+not_checked() { record WARN "$1" "$2" "not checked: $(kerr)"; }
 
-# helper: count pods matching a jq filter over .items[]
-count_pods() { echo "$PODS_JSON" | jq "[.items[] | select($1)] | length"; }
-list_pods()  { echo "$PODS_JSON" | jq -r "[.items[] | select($1) | .metadata.namespace + \"/\" + .metadata.name] | .[0:8] | .[]"; }
+# helper: count pods matching a jq filter over .items[]; ctrs = containers + initContainers
+JQ_DEFS='def ctrs: (.spec.containers // []) + (.spec.initContainers // []);'
+count_pods() { echo "$PODS_JSON" | jq "$JQ_DEFS [.items[] | select($1)] | length"; }
+list_pods()  { echo "$PODS_JSON" | jq -r "$JQ_DEFS [.items[] | select($1) | .metadata.namespace + \"/\" + .metadata.name] | .[0:8] | .[]"; }
 
-check_pods() { # severity domain "#N check" jq_filter
+check_pods() { # severity domain "#N check" jq_filter (must yield one boolean per pod)
   local sev="$1" dom="$2" name="$3" filt="$4"
   local c; c="$(count_pods "$filt")"
   if [[ "$c" == "0" ]]; then record PASS "$dom" "$name" "no matching workloads"
@@ -66,61 +80,72 @@ check_pods() { # severity domain "#N check" jq_filter
 
 # ── Pod Security (checklist domain I) ─────────────────────────────────────────
 check_pods FAIL "Pod Security" "#2 Privileged containers" \
-  '.spec.containers[]?.securityContext?.privileged == true'
+  'any(ctrs[]; .securityContext.privileged == true)'
 check_pods FAIL "Pod Security" "#3 allowPrivilegeEscalation not disabled" \
-  'any(.spec.containers[]?; .securityContext.allowPrivilegeEscalation != false)'
+  'any(ctrs[]; .securityContext.allowPrivilegeEscalation != false)'
 check_pods WARN "Pod Security" "#4 Running as root (runAsNonRoot unset)" \
-  '((.spec.securityContext.runAsNonRoot // false) == false) and (all(.spec.containers[]?; (.securityContext.runAsNonRoot // false) == false))'
+  '(.spec.securityContext.runAsNonRoot != true) and all(ctrs[]; .securityContext.runAsNonRoot != true)'
 check_pods FAIL "Pod Security" "#5 hostNetwork / hostPID / hostIPC" \
   '(.spec.hostNetwork == true) or (.spec.hostPID == true) or (.spec.hostIPC == true)'
 check_pods WARN "Pod Security" "#6 SA token auto-mounted" \
   'any(.spec.volumes[]?; any(.projected.sources[]?; .serviceAccountToken != null))'
 check_pods WARN "Pod Security" "#7 Capabilities not dropped (ALL)" \
-  'any(.spec.containers[]?; (.securityContext.capabilities.drop // []) | map(ascii_upcase) | index("ALL") | not)'
+  'any(ctrs[]; (.securityContext.capabilities.drop // []) | map(ascii_upcase | ltrimstr("CAP_")) | index("ALL") | not)'
 check_pods FAIL "Pod Security" "#7b Dangerous capabilities added" \
-  'any(.spec.containers[]?; (.securityContext.capabilities.add // []) | map(ascii_upcase | ltrimstr("CAP_")) | any(. == "SYS_ADMIN" or . == "NET_ADMIN" or . == "NET_RAW" or . == "SYS_PTRACE" or . == "SYS_MODULE" or . == "ALL"))'
+  'any(ctrs[]; (.securityContext.capabilities.add // []) | map(ascii_upcase | ltrimstr("CAP_")) | any(. == "SYS_ADMIN" or . == "NET_ADMIN" or . == "NET_RAW" or . == "SYS_PTRACE" or . == "SYS_MODULE" or . == "ALL"))'
 check_pods WARN "Pod Security" "#4b readOnlyRootFilesystem not set" \
-  'any(.spec.containers[]?; (.securityContext.readOnlyRootFilesystem // false) != true)'
+  'any(ctrs[]; .securityContext.readOnlyRootFilesystem != true)'
 check_pods WARN "Pod Security" "#9 hostPath volumes mounted" \
   'any(.spec.volumes[]?; .hostPath != null)'
 # ── Supply Chain (domain V) ───────────────────────────────────────────────────
 check_pods WARN "Supply Chain" "#28 Images using :latest or untagged" \
-  '.spec.containers[]?.image | (test(":latest$")) or (test(":") | not)'
+  'any(ctrs[]; .image as $i | ($i | test("@sha256:") | not) and (($i | test(":latest$")) or ($i | split("/") | last | test(":") | not)))'
 
 # ── Resource Management (domain IV) ──────────────────────────────────────────
 check_pods WARN "Cluster Hardening" "#22 Containers without resource limits" \
-  '.spec.containers[]? | (.resources.limits == null)'
+  'any(ctrs[]; .resources.limits == null)'
 
 # ── Cluster hygiene ──────────────────────────────────────────────────────────
-DEFAULT_WORKLOADS="$(kubectl get pods -n default --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-if [[ "$DEFAULT_WORKLOADS" == "0" ]]; then record PASS "Cluster Hardening" "#20 Workloads in default namespace" "default namespace is empty"
-else record WARN "Cluster Hardening" "#20 Workloads in default namespace" "$DEFAULT_WORKLOADS pod(s) in 'default'"; fi
+if DEFAULT_PODS="$(kread get pods -n default -o name)"; then
+  DEFAULT_WORKLOADS="$(printf '%s' "$DEFAULT_PODS" | grep -c . || true)"
+  if [[ "$DEFAULT_WORKLOADS" == "0" ]]; then record PASS "Cluster Hardening" "#20 Workloads in default namespace" "default namespace is empty"
+  else record WARN "Cluster Hardening" "#20 Workloads in default namespace" "$DEFAULT_WORKLOADS pod(s) in 'default'"; fi
+else not_checked "Cluster Hardening" "#20 Workloads in default namespace"; fi
 
 # ── Network (domain II): namespaces with no NetworkPolicy ────────────────────
-NP_MISSING=""
-while read -r ns; do
-  [[ -z "$ns" || "$ns" =~ ^(kube-system|kube-public|kube-node-lease)$ ]] && continue
-  local_np="$(kubectl get netpol -n "$ns" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-  [[ "$local_np" == "0" ]] && NP_MISSING+="$ns "
-done < <(kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
-if [[ -z "$NP_MISSING" ]]; then record PASS "Network" "#8 Namespaces without a NetworkPolicy" "all namespaces have at least one"
-else record FAIL "Network" "#8 Namespaces without a NetworkPolicy" "no NetworkPolicy in: ${NP_MISSING% }"; fi
+if NP_JSON="$(kread get namespaces,networkpolicies --all-namespaces -o json)"; then
+  NP_MISSING="$(echo "$NP_JSON" | jq -r '
+    ([.items[] | select(.kind == "NetworkPolicy") | .metadata.namespace] | unique) as $np
+    | [.items[] | select(.kind == "Namespace") | .metadata.name
+       | select(test("^kube-(system|public|node-lease)$") | not)
+       | select(. as $n | ($np | index($n)) == null)] | join(" ")')"
+  if [[ -z "$NP_MISSING" ]]; then record PASS "Network" "#8 Namespaces without a NetworkPolicy" "all namespaces have at least one"
+  else record FAIL "Network" "#8 Namespaces without a NetworkPolicy" "no NetworkPolicy in: $NP_MISSING"; fi
+else not_checked "Network" "#8 Namespaces without a NetworkPolicy"; fi
 
-# ── RBAC (domain III): cluster-admin bindings ────────────────────────────────
-ADMIN_BINDINGS="$(kubectl get clusterrolebindings -o json 2>/dev/null \
-  | jq -r '[.items[] | select(.roleRef.name=="cluster-admin") | .metadata.name] | length' 2>/dev/null || echo 0)"
-if [[ "$ADMIN_BINDINGS" -le 1 ]]; then record PASS "RBAC" "#14 cluster-admin bindings" "$ADMIN_BINDINGS binding(s)"
-else record WARN "RBAC" "#14 cluster-admin bindings" "$ADMIN_BINDINGS bindings grant cluster-admin — review each"; fi
+# ── RBAC (domain III) ────────────────────────────────────────────────────────
+# Built-in RBAC objects (label kubernetes.io/bootstrapping=rbac-defaults, e.g. the
+# cluster-admin binding to system:masters) are left out: what is listed was added.
+JQ_BUILTIN='def builtin: (.metadata.labels["kubernetes.io/bootstrapping"] // "") == "rbac-defaults";'
+if CRB_JSON="$(kread get clusterrolebindings -o json)"; then
+  ADMINS="$(echo "$CRB_JSON" | jq -r "$JQ_BUILTIN"'
+    [.items[] | select(.roleRef.name == "cluster-admin") | select(builtin | not)
+     | "\(.metadata.name) -> \([.subjects[]? | "\(.kind):\(.namespace // "")/\(.name)"] | join(" "))"]
+    | "\(length)\t\(.[0:8] | join("; "))"')"
+  ADMIN_COUNT="${ADMINS%%$'\t'*}"
+  if [[ "$ADMIN_COUNT" == "0" ]]; then record PASS "RBAC" "#14 cluster-admin bindings" "none added (built-in bindings excluded)"
+  else record WARN "RBAC" "#14 cluster-admin bindings" "$ADMIN_COUNT added binding(s), review each: ${ADMINS#*$'\t'}"; fi
+else not_checked "RBAC" "#14 cluster-admin bindings"; fi
 
-# ── RBAC (domain III): roles granting verbs=* on resources=* ─────────────────
-WILDCARD_COUNT="$(kubectl get clusterroles,roles --all-namespaces -o json 2>/dev/null \
-  | jq -r '[.items[] | select((.metadata.name // "" | startswith("system:")) | not) | select(any(.rules[]?; ((.verbs // []) | index("*")) and ((.resources // []) | index("*"))))] | length' 2>/dev/null || echo 0)"
-if [[ "${WILDCARD_COUNT:-0}" -eq 0 ]]; then record PASS "RBAC" "#16 Roles granting * verbs on * resources" "none (excluding built-in system: roles)"
-else
-  WNAMES="$(kubectl get clusterroles,roles --all-namespaces -o json 2>/dev/null \
-    | jq -r '[.items[] | select((.metadata.name // "" | startswith("system:")) | not) | select(any(.rules[]?; ((.verbs // []) | index("*")) and ((.resources // []) | index("*")))) | .metadata.name] | .[0:8] | join(", ")' 2>/dev/null)"
-  record WARN "RBAC" "#16 Roles granting * verbs on * resources" "$WILDCARD_COUNT role(s): $WNAMES"
-fi
+if ROLES_JSON="$(kread get clusterroles,roles --all-namespaces -o json)"; then
+  WILD="$(echo "$ROLES_JSON" | jq -r "$JQ_BUILTIN"'
+    [.items[] | select(((.metadata.name // "" | startswith("system:")) or builtin) | not)
+     | select(any(.rules[]?; ((.verbs // []) | index("*")) != null and ((.resources // []) | index("*")) != null))
+     | .metadata.name] | "\(length)\t\(.[0:8] | join(", "))"')"
+  WILDCARD_COUNT="${WILD%%$'\t'*}"
+  if [[ "$WILDCARD_COUNT" == "0" ]]; then record PASS "RBAC" "#16 Roles granting * verbs on * resources" "none (built-in and system: roles excluded)"
+  else record WARN "RBAC" "#16 Roles granting * verbs on * resources" "$WILDCARD_COUNT role(s): ${WILD#*$'\t'}"; fi
+else not_checked "RBAC" "#16 Roles granting * verbs on * resources"; fi
 check_pods WARN "RBAC" "#15 Workloads using the default ServiceAccount" \
   '((.spec.serviceAccountName // "default") == "default") and ((.metadata.namespace // "") | startswith("kube-") | not)'
 

@@ -46,6 +46,10 @@ Requirements: `kubectl` (pointed at your cluster) and `jq`.
 ```
 
 Exit code is non-zero if any **FAIL**-severity check trips — so you can gate CI on it.
+If the script cannot list pods (no cluster access, wrong context) it prints the
+kubectl error and exits with code 3 without a report. A check it cannot read, for
+example cluster-wide RBAC with a namespace-scoped identity, shows as a WARN
+"not checked", never as a PASS.
 
 ### Shareable HTML report
 
@@ -92,7 +96,7 @@ a privileged container or an unprotected namespace (full example in
 ## Use it with Claude
 
 The [k8s-security-audit skill](https://github.com/k8s-security-pro/k8s-audit-skill)
-runs this script plus extra RBAC, secrets and exposure checks from Claude Code,
+runs the same checks plus extra RBAC, secrets and exposure checks from Claude Code,
 then writes a prioritized fix plan with YAML, mapped to CIS, SOC 2 and ISO 27001:
 
 ```
